@@ -1,4 +1,5 @@
 # UP DROP - file server con dashboard di controllo
+import mimetypes
 import os
 import shutil
 import time
@@ -78,6 +79,16 @@ tr:last-child td{border:0}td.a{text-align:right}
 .tag{font-size:.72rem;padding:2px 8px;border-radius:99px;background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok)}
 .tag.old{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .empty{padding:30px;text-align:center;color:var(--mut)}
+#pv{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;padding:16px;z-index:9}
+#pv.on{display:flex}
+#pvb{background:var(--card);border-radius:12px;width:min(1000px,100%);max-height:100%;display:flex;flex-direction:column;overflow:hidden}
+#pvh{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+#pvh b{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#pvc{padding:12px;overflow:auto;display:flex;justify-content:center;min-height:120px}
+#pvc img,#pvc video{max-width:100%;max-height:75vh}
+#pvc iframe{width:100%;height:75vh;border:0}
+#pvc pre{margin:0;width:100%;white-space:pre-wrap;word-break:break-all;font-size:.8rem;max-height:75vh;overflow:auto}
+td.n a{color:inherit;cursor:pointer}
 #toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:10px 18px;border-radius:10px;opacity:0;transition:.2s;pointer-events:none}
 #toast.on{opacity:1}
 </style>
@@ -117,6 +128,9 @@ tr:last-child td{border:0}td.a{text-align:right}
     <tbody id="rows"></tbody>
   </table><div class="empty" id="empty" hidden>Nessun file.</div></div>
 </div>
+<div id="pv"><div id="pvb">
+  <div id="pvh"><b id="pvt"></b><a id="pvd"><button class="p">⬇ Scarica</button></a><button id="pvx">✕</button></div>
+  <div id="pvc"></div></div></div>
 <div id="toast"></div>
 
 <script>
@@ -148,9 +162,10 @@ function render(){
     .sort((a,b)=>(a[sortK]>b[sortK]?1:-1)*sortD);
   $('#rows').innerHTML=v.map(f=>{const k=esc(key(f));return `<tr>
     <td><input type="checkbox" data-k="${k}" ${sel.has(key(f))?'checked':''}></td>
-    <td class="n">${esc(f.name)}</td><td>${fmt(f.size)}</td><td>${date(f.mtime)}</td>
+    <td class="n">${kind(f.name)?`<a data-p="${k}">${esc(f.name)}</a>`:esc(f.name)}</td><td>${fmt(f.size)}</td><td>${date(f.mtime)}</td>
     <td><span class="tag ${f.area}">${f.area=='old'?'archiviato':'attivo'}</span></td>
-    <td class="a"><a href="/download/${f.area}/${encodeURIComponent(f.name)}"><button>⬇</button></a></td></tr>`}).join('');
+    <td class="a">${kind(f.name)?`<button data-p="${k}">👁</button>`:''}
+      <a href="/download/${f.area}/${encodeURIComponent(f.name)}"><button>⬇</button></a></td></tr>`}).join('');
   $('#empty').hidden=v.length>0;
   const n=sel.size;['#bArc','#bRes','#bDel'].forEach(b=>$(b).disabled=!n);
   $('#all').checked=v.length>0&&v.every(f=>sel.has(key(f)));
@@ -159,6 +174,27 @@ function render(){
 const picked=()=>[...sel].map(k=>{const i=k.indexOf('/');return{area:k.slice(0,i),name:k.slice(i+1)}});
 async function act(fn,msg){try{await fn();toast(msg)}catch(e){toast('Errore: '+e.message)}sel.clear();load()}
 
+const KINDS={img:'png jpg jpeg gif webp bmp',video:'mp4 webm mov m4v',audio:'mp3 wav ogg m4a',pdf:'pdf',
+  text:'txt csv json log md xml py js html css ini yml yaml kml'};
+function kind(n){const e=n.split('.').pop().toLowerCase();return Object.keys(KINDS).find(k=>KINDS[k].split(' ').includes(e))}
+async function preview(k){
+  const i=k.indexOf('/'),area=k.slice(0,i),name=k.slice(i+1);
+  const u=`/preview/${area}/${encodeURIComponent(name)}`,c=$('#pvc'),t=kind(name);
+  $('#pvt').textContent=name;$('#pvd').href=`/download/${area}/${encodeURIComponent(name)}`;
+  c.innerHTML='';$('#pv').classList.add('on');
+  if(t=='img')c.innerHTML=`<img src="${u}">`;
+  else if(t=='video')c.innerHTML=`<video src="${u}" controls autoplay></video>`;
+  else if(t=='audio')c.innerHTML=`<audio src="${u}" controls autoplay></audio>`;
+  else if(t=='pdf')c.innerHTML=`<iframe src="${u}"></iframe>`;
+  else if(t=='text'){ // solo i primi 200 KB
+    const r=await fetch(u,{headers:{Range:'bytes=0-200000'}}),p=document.createElement('pre');
+    p.textContent=await r.text();c.replaceChildren(p);
+  }else c.innerHTML='<div class="empty">Anteprima non disponibile per questo tipo di file.</div>';
+}
+document.addEventListener('click',e=>{const p=e.target.closest('[data-p]');if(p)preview(p.dataset.p)});
+const closePv=()=>{$('#pv').classList.remove('on');$('#pvc').innerHTML=''};
+$('#pvx').onclick=closePv;$('#pv').onclick=e=>{if(e.target.id=='pv')closePv()};
+document.addEventListener('keydown',e=>{if(e.key=='Escape')closePv()});
 $('#rows').onchange=e=>{const k=e.target.dataset.k;if(k){e.target.checked?sel.add(k):sel.delete(k);render()}};
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{
   tab=b.dataset.t;document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x==b));render()});
@@ -254,6 +290,23 @@ def download_file(area, filename):
     if not path_of(area, filename):
         return jsonify(error='file non trovato'), 404
     return send_from_directory(DIRS[area], filename, as_attachment=True)
+
+
+@app.route('/preview/<area>/<path:filename>')
+def preview_file(area, filename):
+    """Serve inline solo tipi innocui: HTML/SVG caricati eseguirebbero script nella stessa origine."""
+    if not path_of(area, filename):
+        return jsonify(error='file non trovato'), 404
+    mt = mimetypes.guess_type(filename)[0] or ''
+    if mt.startswith('text/') or mt in ('application/json', 'application/xml'):
+        mt = 'text/plain'
+    elif not (mt.startswith(('video/', 'audio/')) or mt == 'application/pdf'
+              or (mt.startswith('image/') and 'svg' not in mt)):
+        return jsonify(error='anteprima non supportata'), 415
+    r = send_from_directory(DIRS[area], filename, mimetype=mt, as_attachment=False)
+    r.headers['X-Content-Type-Options'] = 'nosniff'
+    r.headers['Content-Security-Policy'] = 'sandbox'
+    return r
 
 
 if __name__ == '__main__':
