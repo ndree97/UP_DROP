@@ -41,6 +41,14 @@ def move(area, name, to):
     return False
 
 
+LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#5b5bf0"/><path d="M32 12v26M21 27l11-11 11 11" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 40v8a4 4 0 0 0 4 4h28a4 4 0 0 0 4-4v-8" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round"/></svg>"""
+
+
+def is_admin():
+    """Admin = chi usa il browser sulla macchina che esegue il server."""
+    return request.remote_addr in ('127.0.0.1', '::1')
+
+
 HTML = """
 <!doctype html>
 <html lang="it">
@@ -48,6 +56,7 @@ HTML = """
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>UP DROP</title>
+<link rel="icon" href="/logo.svg">
 <style>
 :root{--bg:#f3f4f8;--card:#fff;--fg:#1c2033;--mut:#707693;--line:#e4e6ef;--acc:#5b5bf0;--accf:#fff;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
 @media (prefers-color-scheme:dark){:root{--bg:#12141f;--card:#1b1e2e;--fg:#e8eaf6;--mut:#8a90ad;--line:#2b2f45;--acc:#7c7cff;--accf:#12141f}}
@@ -95,7 +104,7 @@ td.n a{color:inherit;cursor:pointer}
 </head>
 <body>
 <div class="wrap">
-  <header><h1>📦 UP DROP</h1><span>dashboard di controllo</span></header>
+  <header><img src="/logo.svg" width="36" height="36" alt=""><h1>UP DROP</h1><span>dashboard di controllo</span></header>
 
   <div class="stats" id="stats"></div>
 
@@ -135,7 +144,7 @@ td.n a{color:inherit;cursor:pointer}
 
 <script>
 const $=s=>document.querySelector(s);
-let files=[], tab='all', sortK='mtime', sortD=-1, sel=new Set();
+let files=[], known=null, admin=false, tab='all', sortK='mtime', sortD=-1, sel=new Set();
 const key=f=>f.area+'/'+f.name;
 const esc=s=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=b=>{const u=['B','KB','MB','GB','TB'];let i=0;while(b>=1024&&i<4){b/=1024;i++}return b.toFixed(i?1:0)+' '+u[i]};
@@ -145,8 +154,8 @@ async function api(url,body){
   const r=await fetch(url,body&&{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);return j;
 }
-async function load(){
-  const j=await api('/api/files');files=j.files;sel=new Set([...sel].filter(k=>files.some(f=>key(f)==k)));
+async function load(notify){
+  const j=await api('/api/files');files=j.files;admin=j.admin;sel=new Set([...sel].filter(k=>files.some(f=>key(f)==k)));
   const act=files.filter(f=>f.area=='active'),old=files.filter(f=>f.area=='old');
   const sum=a=>a.reduce((s,f)=>s+f.size,0);
   $('#stats').innerHTML=[
@@ -154,6 +163,12 @@ async function load(){
     ['Archiviati',old.length+' · '+fmt(sum(old))],['Spazio usato',fmt(sum(files))],
     ['Disco libero',fmt(j.free)]
   ].map(([l,v])=>`<div class="card stat"><small>${l}</small><b>${v}</b></div>`).join('');
+  const fresh=files.filter(f=>f.area=='active'&&known&&!known.has(key(f)));
+  known=new Set(files.filter(f=>f.area=='active').map(key));
+  if(notify&&fresh.length){
+    const m=fresh.length==1?fresh[0].name:fresh.length+' nuovi file';toast('Nuovo upload: '+m);
+    if('Notification' in window&&Notification.permission=='granted')new Notification('UP DROP - nuovo upload',{body:m,icon:'/logo.svg'});
+  }
   render();
 }
 function render(){
@@ -168,6 +183,7 @@ function render(){
       <a href="/download/${f.area}/${encodeURIComponent(f.name)}"><button>⬇</button></a></td></tr>`}).join('');
   $('#empty').hidden=v.length>0;
   const n=sel.size;['#bArc','#bRes','#bDel'].forEach(b=>$(b).disabled=!n);
+  $('#bDel').hidden=!admin;
   $('#all').checked=v.length>0&&v.every(f=>sel.has(key(f)));
   $('#all').onchange=e=>{v.forEach(f=>e.target.checked?sel.add(key(f)):sel.delete(key(f)));render()};
 }
@@ -222,6 +238,9 @@ dz.ondragover=e=>{e.preventDefault();dz.classList.add('over')};
 dz.ondragleave=()=>dz.classList.remove('over');
 dz.ondrop=e=>{e.preventDefault();dz.classList.remove('over');upload(e.dataTransfer.files)};
 load();
+setInterval(()=>load(true).catch(()=>{}),3000);
+// il permesso richiede un gesto utente; le notifiche funzionano su localhost/HTTPS
+document.addEventListener('click',()=>{if('Notification' in window&&Notification.permission=='default')Notification.requestPermission()},{once:true});
 </script>
 </body>
 </html>
@@ -233,6 +252,11 @@ def index():
     return render_template_string(HTML)
 
 
+@app.route('/logo.svg')
+def logo():
+    return app.response_class(LOGO, mimetype='image/svg+xml')
+
+
 @app.route('/api/files')
 def api_files():
     out = []
@@ -241,7 +265,7 @@ def api_files():
             if e.is_file():
                 st = e.stat()
                 out.append({'name': e.name, 'area': area, 'size': st.st_size, 'mtime': st.st_mtime})
-    return jsonify(files=out, free=shutil.disk_usage(BASE).free)
+    return jsonify(files=out, free=shutil.disk_usage(BASE).free, admin=is_admin())
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -264,6 +288,8 @@ def api_move():
 
 @app.route('/api/delete', methods=['POST'])
 def api_delete():
+    if not is_admin():
+        return jsonify(error='solo chi esegue il server può eliminare'), 403
     n = 0
     for i in request.get_json(force=True).get('items', []):
         p = path_of(i.get('area'), i.get('name'))
